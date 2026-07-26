@@ -17,7 +17,7 @@ from client_iov import subsample_capped
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DEFAULT_TEST = r"C:\FederatedLearning\FL\core\data iov\global_test_data.pt"
+DEFAULT_TEST = "/kaggle/input/datasets/npngn123/data-can-fl-il/CAN_label_skew_final_pt/global_test_data.pt"
 
 
 def main():

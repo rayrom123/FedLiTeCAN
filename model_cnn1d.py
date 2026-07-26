@@ -38,8 +38,11 @@ class CNN1D_IDS(nn.Module):
         )
 
     def forward(self, x):
-        # x: (B, 31) float32
-        x = x.unsqueeze(1)          # (B, 1, 31)
+        # x: (B, 31) or (B, 1, 31) float32
+        if x.dim() == 2:
+            x = x.unsqueeze(1)      # (B, 1, 31)
+        elif x.dim() == 3 and x.size(1) != 1 and x.size(2) == 1:
+            x = x.transpose(1, 2)   # (B, 31, 1) -> (B, 1, 31)
         x = self.features(x)        # (B, 128, 1)
         x = x.squeeze(-1)           # (B, 128)
         return self.classifier(x)
