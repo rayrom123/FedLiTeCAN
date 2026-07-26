@@ -198,15 +198,19 @@ class IncrementalFedAvg(fl.server.strategy.FedAvg):
         global_round = self.start_round + server_round
         task_id, _ = self.task_for_round(global_round)
 
-        total_examples = sum(fit_res.num_examples for _, fit_res in results)
+        active_results = [
+            fit_res for _, fit_res in results
+            if fit_res.num_examples > 0 and not fit_res.metrics.get("skipped", False)
+        ]
+        total_examples = sum(fit_res.num_examples for fit_res in active_results)
         if total_examples > 0:
             train_loss = sum(
                 fit_res.metrics.get("train_loss", 0.0) * fit_res.num_examples
-                for _, fit_res in results
+                for fit_res in active_results
             ) / total_examples
             train_acc = sum(
                 fit_res.metrics.get("train_accuracy", 0.0) * fit_res.num_examples
-                for _, fit_res in results
+                for fit_res in active_results
             ) / total_examples
         else:
             train_loss, train_acc = float("nan"), float("nan")
@@ -216,6 +220,7 @@ class IncrementalFedAvg(fl.server.strategy.FedAvg):
             "train_loss": float(train_loss),
             "train_accuracy": float(train_acc),
             "participating_clients": len(results),
+            "active_clients": len(active_results),
             "failed_clients": len(failures),
         }
 

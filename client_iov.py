@@ -9,6 +9,7 @@ giu nguyen trong so model de hoc tang dan (incremental/continual FL).
 """
 import argparse
 import logging
+import os
 import time
 from collections import Counter, OrderedDict
 from typing import Dict, List, Tuple
@@ -94,11 +95,16 @@ class FlowerClient(fl.client.NumPyClient):
     def _task_path(self, task_id: int) -> str:
         return f"{self.data_root}/federated_data/client_{self.client_id}_task_{task_id}.pt"
 
+    def _has_task(self, task_id: int) -> bool:
+        return os.path.exists(self._task_path(task_id))
+
     def _ensure_task_loaded(self, task_id: int):
         if self.current_task_id == task_id:
             return
 
         path = self._task_path(task_id)
+        if not os.path.exists(path):
+            raise FileNotFoundError(path)
         x, y = load_pt_xy(path)
         logger.info(
             f"Client {self.client_id}: loaded task {task_id} from {path}, "
@@ -145,8 +151,17 @@ class FlowerClient(fl.client.NumPyClient):
 
     def fit(self, parameters, config) -> Tuple[List[np.ndarray], int, Dict]:
         task_id = int(config.get("task_id", 1))
-        self._ensure_task_loaded(task_id)
         self.set_parameters(parameters)
+        if not self._has_task(task_id):
+            logger.info(f"Client {self.client_id}: skip task {task_id} (missing train file)")
+            return self.get_parameters({}), 0, {
+                "task_id": task_id,
+                "skipped": True,
+                "train_loss": 0.0,
+                "train_accuracy": 0.0,
+            }
+
+        self._ensure_task_loaded(task_id)
 
         epochs = int(config.get("local_epochs", 1))
         self.model.train()
@@ -182,8 +197,23 @@ class FlowerClient(fl.client.NumPyClient):
 
     def evaluate(self, parameters, config) -> Tuple[float, int, Dict]:
         task_id = int(config.get("task_id", self.current_task_id or 1))
-        self._ensure_task_loaded(task_id)
         self.set_parameters(parameters)
+        if not self._has_task(task_id):
+            logger.info(f"Client {self.client_id}: skip eval task {task_id} (missing train file)")
+            metrics: Dict = {
+                "task_id": task_id,
+                "skipped": True,
+                "accuracy": 0.0,
+                "balanced_accuracy": 0.0,
+                "eval_loss": 0.0,
+            }
+            for avg in ("micro", "macro", "weighted"):
+                metrics[f"{avg}_precision"] = 0.0
+                metrics[f"{avg}_recall"] = 0.0
+                metrics[f"{avg}_f1"] = 0.0
+            return 0.0, 0, metrics
+
+        self._ensure_task_loaded(task_id)
 
         self.model.eval()
         loss_sum, correct, total = 0.0, 0, 0
