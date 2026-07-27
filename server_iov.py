@@ -1,12 +1,12 @@
 """Flower server cho CAN federated incremental learning voi CNN1D + FedAvg.
 
-Mac dinh chay 6 task, moi task 30 communication rounds, moi round 1 local epoch.
+Mac dinh chay 5 task, moi task 30 communication rounds, moi round 1 local epoch.
 Server danh gia tap trung tren global_test_data.pt sau moi round va ghi:
 train loss, eval loss, accuracy, micro/macro/weighted precision/recall/F1.
 
 Vi du:
   python server_iov.py --mode train
-  python server_iov.py --mode test --checkpoint checkpoints_can_il/round_180.pth
+  python server_iov.py --mode test --checkpoint checkpoints_can_il/round_150.pth
 """
 import argparse
 import csv
@@ -33,9 +33,11 @@ DEFAULT_DATA_ROOT = "/kaggle/input/datasets/npngn123/data-can-fl-il/CAN_label_sk
 DEFAULT_TEST = DEFAULT_DATA_ROOT + "/global_test_data.pt"
 CKPT_DIR = "checkpoints_can_il"
 CSV_FILE = "metrics_can_il.csv"
+ROUND_LOG_FILE = "metrics_can_il_round.log"
 
 METRIC_KEYS = [
     "train_loss", "train_accuracy",
+    "participating_clients", "active_clients", "failed_clients",
     "eval_loss", "accuracy",
     "micro_precision", "micro_recall", "micro_f1",
     "macro_precision", "macro_recall", "macro_f1",
@@ -133,12 +135,18 @@ def log_and_save_metrics(global_round: int, task_id: int, task_round: int,
     merged = {
         "train_loss": train_metrics.get("train_loss", float("nan")),
         "train_accuracy": train_metrics.get("train_accuracy", float("nan")),
+        "participating_clients": train_metrics.get("participating_clients", 0),
+        "active_clients": train_metrics.get("active_clients", 0),
+        "failed_clients": train_metrics.get("failed_clients", 0),
         **eval_metrics,
     }
     logger.info(
         f"[Task {task_id} Round {task_round} | Global {global_round}] "
         f"train_loss={merged['train_loss']:.4f} eval_loss={merged['eval_loss']:.4f} "
         f"acc={merged['accuracy']:.4f} | "
+        f"clients active/total/fail={merged.get('active_clients', 0):.0f}/"
+        f"{merged.get('participating_clients', 0):.0f}/"
+        f"{merged.get('failed_clients', 0):.0f} | "
         f"micro P/R/F1={merged['micro_precision']:.4f}/{merged['micro_recall']:.4f}/{merged['micro_f1']:.4f} | "
         f"macro P/R/F1={merged['macro_precision']:.4f}/{merged['macro_recall']:.4f}/{merged['macro_f1']:.4f} | "
         f"weighted P/R/F1={merged['weighted_precision']:.4f}/{merged['weighted_recall']:.4f}/{merged['weighted_f1']:.4f}"
@@ -149,6 +157,26 @@ def log_and_save_metrics(global_round: int, task_id: int, task_round: int,
         task_round,
         *[round(float(merged[k]), 6) for k in METRIC_KEYS],
     ])
+    with open(ROUND_LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(
+            f"Task {task_id} Round {task_round} Global {global_round} | "
+            f"train_loss={merged['train_loss']:.6f} "
+            f"train_accuracy={merged['train_accuracy']:.6f} "
+            f"eval_loss={merged['eval_loss']:.6f} "
+            f"accuracy={merged['accuracy']:.6f} "
+            f"micro_p={merged['micro_precision']:.6f} "
+            f"micro_r={merged['micro_recall']:.6f} "
+            f"micro_f1={merged['micro_f1']:.6f} "
+            f"macro_p={merged['macro_precision']:.6f} "
+            f"macro_r={merged['macro_recall']:.6f} "
+            f"macro_f1={merged['macro_f1']:.6f} "
+            f"weighted_p={merged['weighted_precision']:.6f} "
+            f"weighted_r={merged['weighted_recall']:.6f} "
+            f"weighted_f1={merged['weighted_f1']:.6f} "
+            f"participating_clients={merged.get('participating_clients', 0):.0f} "
+            f"active_clients={merged.get('active_clients', 0):.0f} "
+            f"failed_clients={merged.get('failed_clients', 0):.0f}\n"
+        )
 
 
 class IncrementalFedAvg(fl.server.strategy.FedAvg):
