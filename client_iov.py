@@ -253,6 +253,10 @@ def main():
     parser.add_argument("--max-samples", type=int, default=0,
                         help="Gioi han so mau moi client (0 = dung het)")
     parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--connect-retries", type=int, default=120,
+                        help="So lan thu ket noi server truoc khi fail")
+    parser.add_argument("--retry-wait", type=int, default=5,
+                        help="So giay cho giua cac lan reconnect")
     args = parser.parse_args()
 
     torch.manual_seed(42)
@@ -268,14 +272,14 @@ def main():
         batch_size=args.batch_size,
     )
 
-    for attempt in range(3):
+    for attempt in range(args.connect_retries):
         try:
             fl.client.start_numpy_client(server_address=args.server_address, client=client)
             break
         except Exception as e:
             logger.error(f"Connect attempt {attempt+1} failed: {e}")
-            if attempt < 2:
-                time.sleep(5)
+            if attempt < args.connect_retries - 1:
+                time.sleep(args.retry_wait)
             else:
                 raise
 

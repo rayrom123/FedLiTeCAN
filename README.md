@@ -48,13 +48,15 @@ python server_iov.py \
     --test-file "$DATA_ROOT/global_test_data.pt" \
     --test-max-samples 0 &
 
-sleep 10
+sleep 30
 
 for cid in 0 1 2 3 4 5 6 7 8 9; do
     python client_iov.py \
         --client-id $cid \
         --data-root "$DATA_ROOT" \
-        --max-samples 0 &
+        --max-samples 0 \
+        --connect-retries 120 \
+        --retry-wait 5 &
 done
 
 wait
@@ -79,13 +81,15 @@ python server_iov.py \
     --test-file "$DATA_ROOT/global_test_data.pt" \
     --test-max-samples 0 &
 
-sleep 10
+sleep 30
 
 for cid in 0 1 2 3 4 5 6 7 8 9; do
     python client_iov.py \
         --client-id $cid \
         --data-root "$DATA_ROOT" \
-        --max-samples 0 &
+        --max-samples 0 \
+        --connect-retries 120 \
+        --retry-wait 5 &
 done
 
 wait
@@ -103,7 +107,7 @@ DATA_ROOT="/kaggle/input/datasets/npngn123/data-can-fl/CAN_label_skew_FL_only_pt
 
 python server_iov.py \
     --mode test \
-    --checkpoint checkpoints_can_fl/round_029.pth \
+    --checkpoint checkpoints_can_fl/round_030.pth \
     --test-file "$DATA_ROOT/global_test_data.pt" \
     --test-max-samples 0
 ```
@@ -112,4 +116,4 @@ Outputs:
 
 - `metrics_can_fl.csv`
 - `metrics_can_fl_round.log`
-- `checkpoints_can_fl/round_029.pth`
+- `checkpoints_can_fl/round_030.pth`
