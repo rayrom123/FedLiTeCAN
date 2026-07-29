@@ -24,6 +24,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from model_cnn1d import CNN1D_IDS, FocalLoss, NUM_GLOBAL_CLASSES, INPUT_LEN
 from client_iov import subsample_capped
+from can_memmap import counts_to_alpha, has_global_memmap, load_global_memmap
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -65,7 +66,18 @@ def append_csv_row(path: str, row: List):
         writer.writerow(row)
 
 
-def load_global_test(test_file: str, max_samples: int, batch_size: int):
+def load_global_test(test_file: str, max_samples: int, batch_size: int, memmap_root: str = ""):
+    if memmap_root:
+        if not has_global_memmap(memmap_root):
+            raise FileNotFoundError(f"Missing global memmap in {memmap_root}")
+        dataset, meta = load_global_memmap(memmap_root)
+        logger.info(
+            f"Streaming global test memmap: n={len(dataset)}, "
+            f"classes={dict((i, c) for i, c in enumerate(meta.get('class_counts', [])) if c)}"
+        )
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+        return loader, np.asarray(meta.get("class_counts", []), dtype=np.int64)
+
     logger.info(f"Loading global test set: {test_file}")
     blob = torch.load(test_file, map_location="cpu", weights_only=False)
     if isinstance(blob, dict):
@@ -91,21 +103,20 @@ def load_global_test(test_file: str, max_samples: int, batch_size: int):
         batch_size=batch_size,
         shuffle=False,
     )
-    return loader, y
+    return loader, np.bincount(y, minlength=NUM_GLOBAL_CLASSES)
 
 
-def make_criterion(y: np.ndarray, device):
-    cnt = Counter(y.tolist())
-    total = len(y)
-    weights = [np.sqrt(total / cnt[c]) if c in cnt else 1.0
-               for c in range(NUM_GLOBAL_CLASSES)]
-    return FocalLoss(alpha=torch.tensor(weights, dtype=torch.float32).to(device), gamma=2.0)
+def make_criterion(class_counts: np.ndarray, device):
+    return FocalLoss(
+        alpha=counts_to_alpha(class_counts, NUM_GLOBAL_CLASSES, device),
+        gamma=2.0,
+    )
 
 
 def evaluate_on_global_test(model, loader, criterion, device) -> Dict[str, float]:
     model.eval()
     loss_sum, correct, total = 0.0, 0, 0
-    preds, targs = [], []
+    cm = np.zeros((NUM_GLOBAL_CLASSES, NUM_GLOBAL_CLASSES), dtype=np.int64)
     with torch.no_grad():
         for xb, yb in loader:
             xb, yb = xb.to(device), yb.to(device)
@@ -114,19 +125,34 @@ def evaluate_on_global_test(model, loader, criterion, device) -> Dict[str, float
             p = out.argmax(1)
             correct += (p == yb).sum().item()
             total += yb.size(0)
-            preds.extend(p.cpu().numpy())
-            targs.extend(yb.cpu().numpy())
+            y_np = yb.cpu().numpy()
+            p_np = p.cpu().numpy()
+            np.add.at(cm, (y_np, p_np), 1)
 
     metrics = {
         "eval_loss": loss_sum / total if total > 0 else 0.0,
         "accuracy": correct / total if total > 0 else 0.0,
     }
-    for avg in ("micro", "macro", "weighted"):
-        prec, rec, f1, _ = precision_recall_fscore_support(
-            targs, preds, average=avg, zero_division=0)
-        metrics[f"{avg}_precision"] = float(prec)
-        metrics[f"{avg}_recall"] = float(rec)
-        metrics[f"{avg}_f1"] = float(f1)
+    tp = np.diag(cm).astype(np.float64)
+    fp = cm.sum(axis=0) - tp
+    fn = cm.sum(axis=1) - tp
+    support = cm.sum(axis=1).astype(np.float64)
+    precision = tp / np.maximum(tp + fp, 1.0)
+    recall = tp / np.maximum(tp + fn, 1.0)
+    f1 = 2 * precision * recall / np.maximum(precision + recall, 1e-12)
+    metrics["micro_precision"] = float(tp.sum() / max(tp.sum() + fp.sum(), 1.0))
+    metrics["micro_recall"] = float(tp.sum() / max(tp.sum() + fn.sum(), 1.0))
+    metrics["micro_f1"] = float(
+        2 * metrics["micro_precision"] * metrics["micro_recall"] /
+        max(metrics["micro_precision"] + metrics["micro_recall"], 1e-12)
+    )
+    metrics["macro_precision"] = float(precision.mean())
+    metrics["macro_recall"] = float(recall.mean())
+    metrics["macro_f1"] = float(f1.mean())
+    total_support = max(support.sum(), 1.0)
+    metrics["weighted_precision"] = float((precision * support).sum() / total_support)
+    metrics["weighted_recall"] = float((recall * support).sum() / total_support)
+    metrics["weighted_f1"] = float((f1 * support).sum() / total_support)
     return metrics
 
 
@@ -271,7 +297,9 @@ def main():
     parser.add_argument("--local-epochs", type=int, default=1)
     parser.add_argument("--address", type=str, default="0.0.0.0:8081")
     parser.add_argument("--test-file", type=str, default=DEFAULT_TEST)
-    parser.add_argument("--test-max-samples", type=int, default=1_000_000,
+    parser.add_argument("--memmap-root", type=str, default="",
+                        help="Thu muc memmap da tao bang prepare_memmap_can_fl.py")
+    parser.add_argument("--test-max-samples", type=int, default=0,
                         help="So mau global test dung moi round (0 = dung het)")
     parser.add_argument("--test-batch-size", type=int, default=4096)
     args = parser.parse_args()
@@ -289,12 +317,13 @@ def main():
         start_round = load_checkpoint(args.checkpoint, model)
         logger.info(f"Loaded checkpoint '{args.checkpoint}' (round {start_round})")
 
-    test_loader, y_test = load_global_test(
+    test_loader, class_counts = load_global_test(
         args.test_file,
         args.test_max_samples,
         args.test_batch_size,
+        args.memmap_root,
     )
-    criterion = make_criterion(y_test, device)
+    criterion = make_criterion(class_counts, device)
     model.to(device)
 
     total_rounds = args.rounds

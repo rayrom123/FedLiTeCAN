@@ -39,6 +39,12 @@ cd /kaggle/working/FedLiTeCAN
 pip install -q flwr scikit-learn pandas
 
 DATA_ROOT="/kaggle/input/datasets/npngn123/data-can-fl/CAN_label_skew_FL_only_pt"
+MEMMAP_ROOT="/kaggle/working/can_fl_memmap"
+
+python prepare_memmap_can_fl.py \
+    --data-root "$DATA_ROOT" \
+    --output-root "$MEMMAP_ROOT" \
+    --num-clients 10
 
 python server_iov.py \
     --mode train \
@@ -46,7 +52,8 @@ python server_iov.py \
     --rounds 30 \
     --local-epochs 1 \
     --test-file "$DATA_ROOT/global_test_data.pt" \
-    --test-max-samples 1000000 &
+    --test-max-samples 0 \
+    --memmap-root "$MEMMAP_ROOT" &
 
 sleep 30
 
@@ -54,7 +61,8 @@ for cid in 0 1 2 3 4 5 6 7 8 9; do
     python client_iov.py \
         --client-id $cid \
         --data-root "$DATA_ROOT" \
-        --max-samples 500000 \
+        --memmap-root "$MEMMAP_ROOT" \
+        --max-samples 0 \
         --connect-retries 120 \
         --retry-wait 5 &
 done
@@ -71,6 +79,7 @@ set -e
 cd /kaggle/working/FedLiTeCAN
 
 DATA_ROOT="/kaggle/input/datasets/npngn123/data-can-fl/CAN_label_skew_FL_only_pt"
+MEMMAP_ROOT="/kaggle/working/can_fl_memmap"
 
 python server_iov.py \
     --mode resume \
@@ -79,7 +88,8 @@ python server_iov.py \
     --rounds 30 \
     --local-epochs 1 \
     --test-file "$DATA_ROOT/global_test_data.pt" \
-    --test-max-samples 1000000 &
+    --test-max-samples 0 \
+    --memmap-root "$MEMMAP_ROOT" &
 
 sleep 30
 
@@ -87,7 +97,8 @@ for cid in 0 1 2 3 4 5 6 7 8 9; do
     python client_iov.py \
         --client-id $cid \
         --data-root "$DATA_ROOT" \
-        --max-samples 500000 \
+        --memmap-root "$MEMMAP_ROOT" \
+        --max-samples 0 \
         --connect-retries 120 \
         --retry-wait 5 &
 done
@@ -104,12 +115,14 @@ set -e
 cd /kaggle/working/FedLiTeCAN
 
 DATA_ROOT="/kaggle/input/datasets/npngn123/data-can-fl/CAN_label_skew_FL_only_pt"
+MEMMAP_ROOT="/kaggle/working/can_fl_memmap"
 
 python server_iov.py \
     --mode test \
     --checkpoint checkpoints_can_fl/round_030.pth \
     --test-file "$DATA_ROOT/global_test_data.pt" \
-    --test-max-samples 1000000
+    --test-max-samples 0 \
+    --memmap-root "$MEMMAP_ROOT"
 ```
 
 Outputs:
@@ -118,7 +131,8 @@ Outputs:
 - `metrics_can_fl_round.log`
 - `checkpoints_can_fl/round_030.pth`
 
-For a full-data run, change `--max-samples 500000` and
-`--test-max-samples 1000000` to `0`. This requires much more RAM because the
-server loads the global test set and all 10 clients load their local data in
-parallel.
+The memmap step converts `.pt` files one by one into disk-backed `.npy` arrays.
+After that, server and clients stream mini-batches from disk, so `--max-samples 0`
+and `--test-max-samples 0` can run full data without loading all samples into RAM
+at the same time. Checkpoints are saved every round; if Kaggle stops after a
+long run, use the resume block with the latest `checkpoints_can_fl/round_XXX.pth`.

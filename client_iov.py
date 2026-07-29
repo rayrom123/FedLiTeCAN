@@ -20,6 +20,7 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
 
 from model_cnn1d import CNN1D_IDS, FocalLoss, NUM_GLOBAL_CLASSES, INPUT_LEN
+from can_memmap import counts_to_alpha, has_client_memmap, load_client_memmap
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -76,9 +77,10 @@ def load_pt_xy(path: str):
 
 class FlowerClient(fl.client.NumPyClient):
     def __init__(self, client_id: int, data_root: str, device: torch.device,
-                 max_samples: int, batch_size: int):
+                 max_samples: int, batch_size: int, memmap_root: str = ""):
         self.client_id = client_id
         self.data_root = data_root
+        self.memmap_root = memmap_root
         self.device = device
         self.max_samples = max_samples
         self.batch_size = batch_size
@@ -93,6 +95,8 @@ class FlowerClient(fl.client.NumPyClient):
         return f"{self.data_root}/federated_data/client_{self.client_id}.pt"
 
     def _has_data(self) -> bool:
+        if self.memmap_root:
+            return has_client_memmap(self.memmap_root, self.client_id)
         return os.path.exists(self._data_path())
 
     def _ensure_data_loaded(self):
@@ -100,6 +104,24 @@ class FlowerClient(fl.client.NumPyClient):
             return
 
         path = self._data_path()
+        if self.memmap_root:
+            if not has_client_memmap(self.memmap_root, self.client_id):
+                raise FileNotFoundError(f"Missing memmap for client {self.client_id} in {self.memmap_root}")
+            train_ds, val_ds, test_ds, meta = load_client_memmap(self.memmap_root, self.client_id)
+            self.train_loader = DataLoader(train_ds, batch_size=self.batch_size, shuffle=True)
+            self.val_loader = DataLoader(val_ds, batch_size=self.batch_size, shuffle=False)
+            self.test_loader = DataLoader(test_ds, batch_size=self.batch_size, shuffle=False)
+            self.num_train = len(train_ds)
+            logger.info(
+                f"Client {self.client_id}: streaming memmap from {self.memmap_root}, "
+                f"n_train={len(train_ds)} n_val={len(val_ds)} n_test={len(test_ds)}"
+            )
+            alpha = counts_to_alpha(meta.get("train_counts", []), NUM_GLOBAL_CLASSES, self.device)
+            self.criterion = FocalLoss(alpha=alpha, gamma=2.0)
+            self.optimizer = optim.AdamW(self.model.parameters(), lr=0.001, weight_decay=1e-4)
+            self.data_loaded = True
+            return
+
         if not os.path.exists(path):
             raise FileNotFoundError(path)
         x, y = load_pt_xy(path)
@@ -249,8 +271,10 @@ def main():
     parser = argparse.ArgumentParser(description="CNN1D CAN FL Flower client")
     parser.add_argument("--client-id", type=int, required=True, choices=range(10))
     parser.add_argument("--data-root", type=str, default=DEFAULT_DATA_ROOT)
+    parser.add_argument("--memmap-root", type=str, default="",
+                        help="Thu muc memmap da tao bang prepare_memmap_can_fl.py")
     parser.add_argument("--server-address", type=str, default="127.0.0.1:8081")
-    parser.add_argument("--max-samples", type=int, default=500_000,
+    parser.add_argument("--max-samples", type=int, default=0,
                         help="Gioi han so mau moi client (0 = dung het)")
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--connect-retries", type=int, default=120,
@@ -270,6 +294,7 @@ def main():
         device=device,
         max_samples=args.max_samples,
         batch_size=args.batch_size,
+        memmap_root=args.memmap_root,
     )
 
     for attempt in range(args.connect_retries):
