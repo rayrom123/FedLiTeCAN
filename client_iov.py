@@ -108,7 +108,7 @@ class FlowerClient(fl.client.NumPyClient):
             if not has_client_memmap(self.memmap_root, self.client_id):
                 raise FileNotFoundError(f"Missing memmap for client {self.client_id} in {self.memmap_root}")
             train_ds, val_ds, test_ds, meta = load_client_memmap(self.memmap_root, self.client_id)
-            self.train_loader = DataLoader(train_ds, batch_size=self.batch_size, shuffle=True)
+            self.train_loader = DataLoader(train_ds, batch_size=self.batch_size, shuffle=False)
             self.val_loader = DataLoader(val_ds, batch_size=self.batch_size, shuffle=False)
             self.test_loader = DataLoader(test_ds, batch_size=self.batch_size, shuffle=False)
             self.num_train = len(train_ds)

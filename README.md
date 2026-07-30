@@ -53,6 +53,7 @@ python server_iov.py \
     --local-epochs 1 \
     --test-file "$DATA_ROOT/global_test_data.pt" \
     --test-max-samples 0 \
+    --eval-every 5 \
     --memmap-root "$MEMMAP_ROOT" &
 
 sleep 30
@@ -89,6 +90,7 @@ python server_iov.py \
     --local-epochs 1 \
     --test-file "$DATA_ROOT/global_test_data.pt" \
     --test-max-samples 0 \
+    --eval-every 5 \
     --memmap-root "$MEMMAP_ROOT" &
 
 sleep 30
@@ -136,3 +138,7 @@ After that, server and clients stream mini-batches from disk, so `--max-samples 
 and `--test-max-samples 0` can run full data without loading all samples into RAM
 at the same time. Checkpoints are saved every round; if Kaggle stops after a
 long run, use the resume block with the latest `checkpoints_can_fl/round_XXX.pth`.
+
+`--eval-every 5` means full global-test evaluation runs every 5 rounds and on the
+final round. Training loss/accuracy and checkpoints are still recorded every
+round. Use `--eval-every 0` to evaluate only on the final round.
