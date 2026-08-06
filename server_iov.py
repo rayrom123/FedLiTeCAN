@@ -164,17 +164,6 @@ def log_and_save_metrics(global_round: int,
         "participating_clients": train_metrics.get("participating_clients", 0),
         "active_clients": train_metrics.get("active_clients", 0),
         "failed_clients": train_metrics.get("failed_clients", 0),
-        "eval_loss": float("nan"),
-        "accuracy": float("nan"),
-        "micro_precision": float("nan"),
-        "micro_recall": float("nan"),
-        "micro_f1": float("nan"),
-        "macro_precision": float("nan"),
-        "macro_recall": float("nan"),
-        "macro_f1": float("nan"),
-        "weighted_precision": float("nan"),
-        "weighted_recall": float("nan"),
-        "weighted_f1": float("nan"),
         **eval_metrics,
     }
     logger.info(
@@ -312,8 +301,6 @@ def main():
                         help="Thu muc memmap da tao bang prepare_memmap_can_fl.py")
     parser.add_argument("--test-max-samples", type=int, default=0,
                         help="So mau global test dung moi round (0 = dung het)")
-    parser.add_argument("--eval-every", type=int, default=5,
-                        help="Danh gia global test moi N round; 0 = chi danh gia round cuoi")
     parser.add_argument("--test-batch-size", type=int, default=4096)
     args = parser.parse_args()
 
@@ -369,22 +356,13 @@ def main():
             return None
         model.load_state_dict(ndarrays_to_state_dict(model, parameters))
         model.to(device)
-        should_eval = (
-            global_round == total_rounds or
-            (args.eval_every > 0 and global_round % args.eval_every == 0)
-        )
-        if should_eval:
-            eval_metrics = evaluate_on_global_test(model, test_loader, criterion, device)
-        else:
-            eval_metrics = {}
+        eval_metrics = evaluate_on_global_test(model, test_loader, criterion, device)
         log_and_save_metrics(
             global_round,
             eval_metrics,
             strategy.latest_fit_metrics,
         )
-        if should_eval:
-            return eval_metrics["eval_loss"], eval_metrics
-        return None
+        return eval_metrics["eval_loss"], eval_metrics
 
     strategy.evaluate_fn = evaluate_fn
 
