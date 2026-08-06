@@ -250,7 +250,7 @@ def main():
     parser.add_argument("--client-id", type=int, required=True, choices=range(10))
     parser.add_argument("--data-root", type=str, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--server-address", type=str, default="127.0.0.1:8081")
-    parser.add_argument("--max-samples", type=int, default=500_000,
+    parser.add_argument("--max-samples", type=int, default=0,
                         help="Gioi han so mau moi client (0 = dung het)")
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--connect-retries", type=int, default=120,

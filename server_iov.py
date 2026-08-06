@@ -271,7 +271,7 @@ def main():
     parser.add_argument("--local-epochs", type=int, default=1)
     parser.add_argument("--address", type=str, default="0.0.0.0:8081")
     parser.add_argument("--test-file", type=str, default=DEFAULT_TEST)
-    parser.add_argument("--test-max-samples", type=int, default=1_000_000,
+    parser.add_argument("--test-max-samples", type=int, default=0,
                         help="So mau global test dung moi round (0 = dung het)")
     parser.add_argument("--test-batch-size", type=int, default=4096)
     args = parser.parse_args()

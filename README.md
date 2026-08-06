@@ -46,7 +46,7 @@ python server_iov.py \
     --rounds 30 \
     --local-epochs 1 \
     --test-file "$DATA_ROOT/global_test_data.pt" \
-    --test-max-samples 1000000 &
+    --test-max-samples 0 &
 
 sleep 30
 
@@ -54,7 +54,7 @@ for cid in 0 1 2 3 4 5 6 7 8 9; do
     python client_iov.py \
         --client-id $cid \
         --data-root "$DATA_ROOT" \
-        --max-samples 500000 \
+        --max-samples 0 \
         --connect-retries 120 \
         --retry-wait 5 &
 done
@@ -79,7 +79,7 @@ python server_iov.py \
     --rounds 30 \
     --local-epochs 1 \
     --test-file "$DATA_ROOT/global_test_data.pt" \
-    --test-max-samples 1000000 &
+    --test-max-samples 0 &
 
 sleep 30
 
@@ -87,7 +87,7 @@ for cid in 0 1 2 3 4 5 6 7 8 9; do
     python client_iov.py \
         --client-id $cid \
         --data-root "$DATA_ROOT" \
-        --max-samples 500000 \
+        --max-samples 0 \
         --connect-retries 120 \
         --retry-wait 5 &
 done
@@ -109,7 +109,7 @@ python server_iov.py \
     --mode test \
     --checkpoint checkpoints_can_fl/round_030.pth \
     --test-file "$DATA_ROOT/global_test_data.pt" \
-    --test-max-samples 1000000
+    --test-max-samples 0
 ```
 
 Outputs:
@@ -117,8 +117,3 @@ Outputs:
 - `metrics_can_fl.csv`
 - `metrics_can_fl_round.log`
 - `checkpoints_can_fl/round_030.pth`
-
-For a full-data run, change `--max-samples 500000` and
-`--test-max-samples 1000000` to `0`. This requires much more RAM because the
-server loads the global test set and all 10 clients load their local data in
-parallel.
