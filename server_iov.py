@@ -1,12 +1,12 @@
-"""Flower server cho CAN federated learning voi CNN1D + FedAvg.
+"""Flower server cho CAN federated incremental learning voi CNN1D + FedAvg.
 
-Mac dinh chay 30 communication rounds, moi round 1 local epoch.
+Mac dinh chay 5 task, moi task 30 communication rounds, moi round 1 local epoch.
 Server danh gia tap trung tren global_test_data.pt sau moi round va ghi:
 train loss, eval loss, accuracy, micro/macro/weighted precision/recall/F1.
 
 Vi du:
   python server_iov.py --mode train
-  python server_iov.py --mode test --checkpoint checkpoints_can_fl/round_030.pth
+  python server_iov.py --mode test --checkpoint checkpoints_can_il/round_150.pth
 """
 import argparse
 import csv
@@ -29,11 +29,11 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-DEFAULT_DATA_ROOT = "/kaggle/input/datasets/npngn123/data-can-fl/CAN_label_skew_FL_only_pt"
+DEFAULT_DATA_ROOT = "/kaggle/input/datasets/npngn123/data-can-fl-il/CAN_label_skew_final_pt"
 DEFAULT_TEST = DEFAULT_DATA_ROOT + "/global_test_data.pt"
-CKPT_DIR = "checkpoints_can_fl"
-CSV_FILE = "metrics_can_fl.csv"
-ROUND_LOG_FILE = "metrics_can_fl_round.log"
+CKPT_DIR = "checkpoints_can_il"
+CSV_FILE = "metrics_can_il.csv"
+ROUND_LOG_FILE = "metrics_can_il_round.log"
 
 METRIC_KEYS = [
     "train_loss", "train_accuracy",
@@ -43,7 +43,7 @@ METRIC_KEYS = [
     "macro_precision", "macro_recall", "macro_f1",
     "weighted_precision", "weighted_recall", "weighted_f1",
 ]
-CSV_HEADER = ["round"] + METRIC_KEYS
+CSV_HEADER = ["global_round", "task_id", "task_round"] + METRIC_KEYS
 
 
 def get_model_parameters(model):
@@ -130,7 +130,7 @@ def evaluate_on_global_test(model, loader, criterion, device) -> Dict[str, float
     return metrics
 
 
-def log_and_save_metrics(global_round: int,
+def log_and_save_metrics(global_round: int, task_id: int, task_round: int,
                          eval_metrics: Dict[str, float], train_metrics: Dict[str, float]):
     merged = {
         "train_loss": train_metrics.get("train_loss", float("nan")),
@@ -141,7 +141,7 @@ def log_and_save_metrics(global_round: int,
         **eval_metrics,
     }
     logger.info(
-        f"[Round {global_round}] "
+        f"[Task {task_id} Round {task_round} | Global {global_round}] "
         f"train_loss={merged['train_loss']:.4f} eval_loss={merged['eval_loss']:.4f} "
         f"acc={merged['accuracy']:.4f} | "
         f"clients active/total/fail={merged.get('active_clients', 0):.0f}/"
@@ -153,11 +153,13 @@ def log_and_save_metrics(global_round: int,
     )
     append_csv_row(CSV_FILE, [
         global_round,
+        task_id,
+        task_round,
         *[round(float(merged[k]), 6) for k in METRIC_KEYS],
     ])
     with open(ROUND_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(
-            f"Round {global_round} | "
+            f"Task {task_id} Round {task_round} Global {global_round} | "
             f"train_loss={merged['train_loss']:.6f} "
             f"train_accuracy={merged['train_accuracy']:.6f} "
             f"eval_loss={merged['eval_loss']:.6f} "
@@ -177,20 +179,31 @@ def log_and_save_metrics(global_round: int,
         )
 
 
-class CANFedAvg(fl.server.strategy.FedAvg):
-    def __init__(self, template_model, local_epochs=1, start_round=0, **kwargs):
+class IncrementalFedAvg(fl.server.strategy.FedAvg):
+    def __init__(self, template_model, local_epochs=1, start_round=0,
+                 num_tasks=5, task_rounds=30, **kwargs):
         super().__init__(**kwargs)
         self.template_model = template_model
         self.local_epochs = local_epochs
         self.start_round = start_round
+        self.num_tasks = num_tasks
+        self.task_rounds = task_rounds
         self.latest_parameters: Optional[Parameters] = None
         self.latest_fit_metrics: Dict[str, float] = {}
 
+    def task_for_round(self, global_round: int):
+        task_id = min(((global_round - 1) // self.task_rounds) + 1, self.num_tasks)
+        task_round = ((global_round - 1) % self.task_rounds) + 1
+        return task_id, task_round
+
     def configure_fit(self, server_round, parameters, client_manager):
         global_round = self.start_round + server_round
+        task_id, task_round = self.task_for_round(global_round)
         config = {
             "local_epochs": self.local_epochs,
             "server_round": global_round,
+            "task_id": task_id,
+            "task_round": task_round,
         }
         sample_size, min_num = self.num_fit_clients(client_manager.num_available())
         clients = client_manager.sample(num_clients=sample_size, min_num_clients=min_num)
@@ -198,8 +211,11 @@ class CANFedAvg(fl.server.strategy.FedAvg):
 
     def configure_evaluate(self, server_round, parameters, client_manager):
         global_round = self.start_round + server_round
+        task_id, task_round = self.task_for_round(global_round)
         config = {
             "server_round": global_round,
+            "task_id": task_id,
+            "task_round": task_round,
         }
         sample_size, min_num = self.num_evaluation_clients(client_manager.num_available())
         clients = client_manager.sample(num_clients=sample_size, min_num_clients=min_num)
@@ -208,6 +224,7 @@ class CANFedAvg(fl.server.strategy.FedAvg):
     def aggregate_fit(self, server_round, results, failures):
         params, metrics = super().aggregate_fit(server_round, results, failures)
         global_round = self.start_round + server_round
+        task_id, _ = self.task_for_round(global_round)
 
         active_results = [
             fit_res for _, fit_res in results
@@ -227,6 +244,7 @@ class CANFedAvg(fl.server.strategy.FedAvg):
             train_loss, train_acc = float("nan"), float("nan")
 
         self.latest_fit_metrics = {
+            "task_id": task_id,
             "train_loss": float(train_loss),
             "train_accuracy": float(train_acc),
             "participating_clients": len(results),
@@ -242,6 +260,7 @@ class CANFedAvg(fl.server.strategy.FedAvg):
             path = os.path.join(CKPT_DIR, f"round_{global_round:03d}.pth")
             torch.save({
                 "round": global_round,
+                "task_id": task_id,
                 "model_state_dict": state,
             }, path)
             logger.info(f"[Round {global_round}] global checkpoint saved -> {path}")
@@ -258,20 +277,17 @@ def load_checkpoint(path: str, model) -> int:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="CNN1D CAN FL Flower server")
+    parser = argparse.ArgumentParser(description="CNN1D CAN incremental Flower server")
     parser.add_argument("--mode", choices=["train", "resume", "test"], default="train")
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Checkpoint bat buoc voi resume/test")
     parser.add_argument("--num-clients", type=int, default=10)
-    parser.add_argument("--rounds", type=int, default=30)
-    parser.add_argument("--num-tasks", type=int, default=1,
-                        help=argparse.SUPPRESS)
-    parser.add_argument("--task-rounds", type=int, default=30,
-                        help=argparse.SUPPRESS)
+    parser.add_argument("--num-tasks", type=int, default=5)
+    parser.add_argument("--task-rounds", type=int, default=30)
     parser.add_argument("--local-epochs", type=int, default=1)
     parser.add_argument("--address", type=str, default="0.0.0.0:8081")
     parser.add_argument("--test-file", type=str, default=DEFAULT_TEST)
-    parser.add_argument("--test-max-samples", type=int, default=0,
+    parser.add_argument("--test-max-samples", type=int, default=1_000_000,
                         help="So mau global test dung moi round (0 = dung het)")
     parser.add_argument("--test-batch-size", type=int, default=4096)
     args = parser.parse_args()
@@ -297,11 +313,19 @@ def main():
     criterion = make_criterion(y_test, device)
     model.to(device)
 
-    total_rounds = args.rounds
+    total_rounds = args.num_tasks * args.task_rounds
 
     if args.mode == "test":
+        strategy_helper = IncrementalFedAvg(
+            template_model=model,
+            local_epochs=args.local_epochs,
+            start_round=0,
+            num_tasks=args.num_tasks,
+            task_rounds=args.task_rounds,
+        )
+        task_id, task_round = strategy_helper.task_for_round(max(start_round, 1))
         eval_metrics = evaluate_on_global_test(model, test_loader, criterion, device)
-        log_and_save_metrics(start_round, eval_metrics, {})
+        log_and_save_metrics(start_round, task_id, task_round, eval_metrics, {})
         return
 
     num_rounds = total_rounds - start_round
@@ -309,10 +333,12 @@ def main():
         logger.error(f"Checkpoint da o round {start_round} >= total_rounds {total_rounds}.")
         return
 
-    strategy = CANFedAvg(
+    strategy = IncrementalFedAvg(
         template_model=model,
         local_epochs=args.local_epochs,
         start_round=start_round,
+        num_tasks=args.num_tasks,
+        task_rounds=args.task_rounds,
         fraction_fit=1.0,
         fraction_evaluate=0.0,
         min_fit_clients=args.num_clients,
@@ -327,9 +353,12 @@ def main():
             return None
         model.load_state_dict(ndarrays_to_state_dict(model, parameters))
         model.to(device)
+        task_id, task_round = strategy.task_for_round(global_round)
         eval_metrics = evaluate_on_global_test(model, test_loader, criterion, device)
         log_and_save_metrics(
             global_round,
+            task_id,
+            task_round,
             eval_metrics,
             strategy.latest_fit_metrics,
         )
@@ -346,8 +375,8 @@ def main():
     if strategy.latest_parameters is not None:
         ndarrays = fl.common.parameters_to_ndarrays(strategy.latest_parameters)
         model.load_state_dict(ndarrays_to_state_dict(model, ndarrays))
-        torch.save(model.state_dict(), "cnn1d_can_fl_global.pth")
-        logger.info("Saved final global model -> cnn1d_can_fl_global.pth")
+        torch.save(model.state_dict(), "cnn1d_can_il_global.pth")
+        logger.info("Saved final global model -> cnn1d_can_il_global.pth")
 
 
 if __name__ == "__main__":

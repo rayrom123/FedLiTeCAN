@@ -1,8 +1,11 @@
-"""Flower client cho CAN federated learning voi CNN1D.
+"""Flower client cho CAN federated incremental learning voi CNN1D.
 
 Data train mac dinh:
-  /kaggle/input/datasets/npngn123/data-can-fl/CAN_label_skew_FL_only_pt/
-    federated_data/client_<client_id>.pt
+  /kaggle/input/datasets/npngn123/data-can-fl-il/CAN_label_skew_final_pt/
+    federated_data/client_<client_id>_task_<task_id>.pt
+
+Server gui `task_id` qua Flower config. Client se tu reload data khi sang task moi,
+giu nguyen trong so model de hoc tang dan (incremental/continual FL).
 """
 import argparse
 import logging
@@ -24,7 +27,7 @@ from model_cnn1d import CNN1D_IDS, FocalLoss, NUM_GLOBAL_CLASSES, INPUT_LEN
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DEFAULT_DATA_ROOT = "/kaggle/input/datasets/npngn123/data-can-fl/CAN_label_skew_FL_only_pt"
+DEFAULT_DATA_ROOT = "/kaggle/input/datasets/npngn123/data-can-fl-il/CAN_label_skew_final_pt"
 
 
 def subsample_capped(x: np.ndarray, y: np.ndarray, max_samples: int, seed=42):
@@ -82,34 +85,34 @@ class FlowerClient(fl.client.NumPyClient):
         self.device = device
         self.max_samples = max_samples
         self.batch_size = batch_size
-        self.data_loaded = False
+        self.current_task_id = None
 
         self.model = CNN1D_IDS(input_len=INPUT_LEN, num_classes=NUM_GLOBAL_CLASSES,
                                dropout=0.15).to(device)
         self.optimizer = optim.AdamW(self.model.parameters(), lr=0.001, weight_decay=1e-4)
         self.criterion = torch.nn.CrossEntropyLoss()
 
-    def _data_path(self) -> str:
-        return f"{self.data_root}/federated_data/client_{self.client_id}.pt"
+    def _task_path(self, task_id: int) -> str:
+        return f"{self.data_root}/federated_data/client_{self.client_id}_task_{task_id}.pt"
 
-    def _has_data(self) -> bool:
-        return os.path.exists(self._data_path())
+    def _has_task(self, task_id: int) -> bool:
+        return os.path.exists(self._task_path(task_id))
 
-    def _ensure_data_loaded(self):
-        if self.data_loaded:
+    def _ensure_task_loaded(self, task_id: int):
+        if self.current_task_id == task_id:
             return
 
-        path = self._data_path()
+        path = self._task_path(task_id)
         if not os.path.exists(path):
             raise FileNotFoundError(path)
         x, y = load_pt_xy(path)
         logger.info(
-            f"Client {self.client_id}: loaded FL data from {path}, "
+            f"Client {self.client_id}: loaded task {task_id} from {path}, "
             f"x={x.shape}, classes={dict(sorted(Counter(y.tolist()).items()))}"
         )
 
         x, y = subsample_capped(x, y, self.max_samples)
-        logger.info(f"Client {self.client_id}: after subsample n={len(y)}")
+        logger.info(f"Client {self.client_id}: task {task_id} after subsample n={len(y)}")
 
         try:
             x_tmp, x_test, y_tmp, y_test = train_test_split(
@@ -138,7 +141,7 @@ class FlowerClient(fl.client.NumPyClient):
         alpha = torch.tensor(weights, dtype=torch.float32).to(self.device)
         self.criterion = FocalLoss(alpha=alpha, gamma=2.0)
         self.optimizer = optim.AdamW(self.model.parameters(), lr=0.001, weight_decay=1e-4)
-        self.data_loaded = True
+        self.current_task_id = task_id
 
     def get_parameters(self, config) -> List[np.ndarray]:
         return get_model_parameters(self.model)
@@ -147,16 +150,18 @@ class FlowerClient(fl.client.NumPyClient):
         set_model_parameters(self.model, parameters)
 
     def fit(self, parameters, config) -> Tuple[List[np.ndarray], int, Dict]:
+        task_id = int(config.get("task_id", 1))
         self.set_parameters(parameters)
-        if not self._has_data():
-            logger.info(f"Client {self.client_id}: skip round (missing train file)")
+        if not self._has_task(task_id):
+            logger.info(f"Client {self.client_id}: skip task {task_id} (missing train file)")
             return self.get_parameters({}), 0, {
+                "task_id": task_id,
                 "skipped": True,
                 "train_loss": 0.0,
                 "train_accuracy": 0.0,
             }
 
-        self._ensure_data_loaded()
+        self._ensure_task_loaded(task_id)
 
         epochs = int(config.get("local_epochs", 1))
         self.model.train()
@@ -180,20 +185,23 @@ class FlowerClient(fl.client.NumPyClient):
             epoch_loss = running / total if total > 0 else 0.0
             epoch_acc = correct / total if total > 0 else 0.0
             logger.info(
-                f"Client {self.client_id} epoch {epoch+1}/{epochs}: "
+                f"Client {self.client_id} task {task_id} epoch {epoch+1}/{epochs}: "
                 f"train_loss={epoch_loss:.4f} train_acc={epoch_acc:.4f}"
             )
 
         return self.get_parameters({}), self.num_train, {
+            "task_id": task_id,
             "train_loss": float(epoch_loss),
             "train_accuracy": float(epoch_acc),
         }
 
     def evaluate(self, parameters, config) -> Tuple[float, int, Dict]:
+        task_id = int(config.get("task_id", self.current_task_id or 1))
         self.set_parameters(parameters)
-        if not self._has_data():
-            logger.info(f"Client {self.client_id}: skip eval (missing train file)")
+        if not self._has_task(task_id):
+            logger.info(f"Client {self.client_id}: skip eval task {task_id} (missing train file)")
             metrics: Dict = {
+                "task_id": task_id,
                 "skipped": True,
                 "accuracy": 0.0,
                 "balanced_accuracy": 0.0,
@@ -205,7 +213,7 @@ class FlowerClient(fl.client.NumPyClient):
                 metrics[f"{avg}_f1"] = 0.0
             return 0.0, 0, metrics
 
-        self._ensure_data_loaded()
+        self._ensure_task_loaded(task_id)
 
         self.model.eval()
         loss_sum, correct, total = 0.0, 0, 0
@@ -226,6 +234,7 @@ class FlowerClient(fl.client.NumPyClient):
         bal_acc = balanced_accuracy_score(targs, preds) if total > 0 else 0.0
 
         metrics: Dict = {
+            "task_id": task_id,
             "accuracy": float(acc),
             "balanced_accuracy": float(bal_acc),
             "eval_loss": float(test_loss),
@@ -238,7 +247,7 @@ class FlowerClient(fl.client.NumPyClient):
             metrics[f"{avg}_f1"] = float(f1)
 
         logger.info(
-            f"Client {self.client_id} eval: eval_loss={test_loss:.4f} "
+            f"Client {self.client_id} task {task_id} eval: eval_loss={test_loss:.4f} "
             f"acc={acc:.4f} micro_f1={metrics['micro_f1']:.4f} "
             f"macro_f1={metrics['macro_f1']:.4f} weighted_f1={metrics['weighted_f1']:.4f}"
         )
@@ -246,12 +255,12 @@ class FlowerClient(fl.client.NumPyClient):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="CNN1D CAN FL Flower client")
+    parser = argparse.ArgumentParser(description="CNN1D CAN incremental Flower client")
     parser.add_argument("--client-id", type=int, required=True, choices=range(10))
     parser.add_argument("--data-root", type=str, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--server-address", type=str, default="127.0.0.1:8081")
-    parser.add_argument("--max-samples", type=int, default=0,
-                        help="Gioi han so mau moi client (0 = dung het)")
+    parser.add_argument("--max-samples", type=int, default=500_000,
+                        help="Gioi han so mau moi client-task (0 = dung het)")
     parser.add_argument("--batch-size", type=int, default=128)
     args = parser.parse_args()
 
